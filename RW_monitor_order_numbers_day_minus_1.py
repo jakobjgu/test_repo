@@ -13,7 +13,7 @@ import mysql.connector
 import smtplib, ssl
 
 import sys
-sys.path.append('/Users/jjgutzmann/Kasha/Notebooks/Python_scripts')
+sys.path.append(f'{path_to_settings_script}')
 
 from settings import DATABASE_HOST
 from settings import DATABASE_USERNAME
