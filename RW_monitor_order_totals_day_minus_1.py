@@ -1,28 +1,32 @@
-country = 'rwanda'
+"""
+This data monitor loads order details from Woocommerce (WC)
+and the MySQL data warehouse (DWH) for orders placed on the
+previous day (between midnight and midnight).
+In the #Comparison section the monitor calculates the difference
+between the order totals for each order_id between WC and DWH.
+If there is a difference detected in any of the order totals
+between WC and DHW, an email is sent, detailing the order_ids
+for which a difference was detected.
+"""
 
+country = 'rwanda'
 country_code = 'rw'
 if country == 'kenya':
     country_code = 'co.ke'
+
 #------------------------------------------------------------------------------
 # Importing relevant packages and credentials
 import pandas as pd
-import os
 from datetime import datetime, timedelta
-from woocommerce import API
-import mysql.connector
-import smtplib, ssl
+from monitor_helper_functions import connect_to_WC, get_db_connector, send_email
 from tabulate import tabulate
-
 import sys
-sys.path.append(f'{path_to_settings_script}')
-
-from settings import DATABASE_HOST
-from settings import DATABASE_USERNAME
-from settings import DATABASE_PASSWORD
-from settings import LAMBERT_WC_RW_CONSUMER_KEY
-from settings import LAMBERT_WC_RW_CONSUMER_SECRET
-from settings import SENDER_EMAIL
-from settings import EMAIL_PASSWORD
+from settings import MAIN_DIRECTORY
+sys.path.append('MAIN_DIRECTORY') #find the os.path for your project and replace here
+from settings import WC_RW_CONSUMER_KEY
+woo_key    = WC_RW_CONSUMER_KEY
+from settings import WC_RW_CONSUMER_SECRET
+woo_secret = WC_RW_CONSUMER_SECRET
 
 start_date = datetime.strftime(datetime.now() - timedelta(1), '%Y-%m-%d') + 'T00:00:00'
 end_date   = datetime.strftime(datetime.now(), '%Y-%m-%d') + 'T00:00:00'
@@ -30,13 +34,11 @@ day        = datetime.strftime(datetime.now() - timedelta(1), '%Y-%m-%d')
 
 #------------------------------------------------------------------------------
 # MySQL-DWH
-my_database = mysql.connector.connect(host=DATABASE_HOST,
-                        database='KASHA_DWH',
-                        user=DATABASE_USERNAME,
-                        password=DATABASE_PASSWORD)
-cursor = my_database.cursor()
+con = get_db_connector('KASHA_DWH')
+cursor = con.cursor()
 
 SELECT = """SELECT order_id, date_created, total, status"""
+
 WHERE = f"""
 WHERE country="{country}"
 AND DATE_FORMAT(date_created, "%Y-%m-%dT%hh:%mm:%ss") > "{start_date}"
@@ -56,18 +58,7 @@ all_orders_DWH = pd.DataFrame(list(zip(order_id, date_created, total, status)),
 #------------------------------------------------------------------------------
 # Woocommerce
 url = f'https://www.kasha.{country_code}/'
-consumer_key = LAMBERT_WC_RW_CONSUMER_KEY
-consumer_secret = LAMBERT_WC_RW_CONSUMER_SECRET
-
-api_connection = API(
-    url=url,
-    consumer_key=consumer_key,
-    consumer_secret=consumer_secret,
-    wp_api=True,
-    version="wc/v3",
-    timeout=100,
-    query_string_auth=True)
-
+api_connection = connect_to_WC(url, woo_key, woo_secret)
 request = api_connection.get('orders', params={'before':end_date, 'after':start_date, 'per_page':100})
 WC_number_of_pages = int(request.headers['X-WP-TotalPages'])
 WC_number_of_orders = int(request.headers['X-WP-Total'])
@@ -88,6 +79,7 @@ comparison.total_DWH = comparison.total_DWH.astype(float)
 comparison.total_WC = comparison.total_WC.astype(float)
 comparison['difference'] = comparison['total_WC'] - comparison['total_DWH']
 
+problems = pd.DataFrame()
 send_order_total_email = False
 if any(comparison['difference']!=0):
     problems = comparison[comparison.difference!=0]
@@ -95,24 +87,12 @@ if any(comparison['difference']!=0):
     send_order_total_email = True
 
 #------------------------------------------------------------------------------
-# Set up email
-port = 465  # For SSL
-smtp_server = "smtp.gmail.com"
-receiver_email = "jakob.gutzmann@gmail.com"
-sender_email = SENDER_EMAIL
-password = EMAIL_PASSWORD
-
+# Send email
 message = f"""\
-Subject: Data monitor ALERT! - Order total discrepancy
-
+Subject: Data monitor #03 ALERT! - Order total discrepancy
 The order_total of at least one order between Woocommerce {country} and the Data Warehouse for {day} does not match.
 The offending order/s are/is:
 {tabulate(problems, headers=['index','order_id','status_WC','status_DWH','total_WC','total_WC','difference'], tablefmt="github", numalign="right")}
 """
-
-# Send email
 if send_order_total_email:
-    context = ssl.create_default_context()
-    with smtplib.SMTP_SSL(smtp_server, port, context=context) as server:
-        server.login(sender_email, password)
-        server.sendmail(sender_email, receiver_email, message)
+    send_email(message)
