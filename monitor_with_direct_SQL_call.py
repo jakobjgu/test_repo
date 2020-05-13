@@ -1,14 +1,21 @@
 # ------------------------------------------------------------------------------
 # Importing relevant packages and credentials
+import pandas as pd
+import os
 from datetime import datetime, timedelta
-from monitor_helper_functions import connect_to_WC, get_db_connector, send_email
+from woocommerce import API
+import mysql.connector
+import smtplib
+import ssl
 import sys
 from settings import MAIN_DIRECTORY
+from settings import DATABASE_USERNAME
+from settings import DATABASE_PASSWORD
 from settings import WC_RW_CONSUMER_KEY
 from settings import WC_RW_CONSUMER_SECRET
-woo_key = WC_RW_CONSUMER_KEY
-woo_secret = WC_RW_CONSUMER_SECRET
-sys.path.append('MAIN_DIRECTORY')  # find the os.path for your project and replace here
+from settings import SENDER_EMAIL
+from settings import EMAIL_PASSWORD
+from settings import RECEIVER_EMAIL
 
 """
 This data monitor counts the number of orders (but no details)
@@ -30,8 +37,11 @@ day = datetime.strftime(datetime.now() - timedelta(1), '%Y-%m-%d')
 
 # ------------------------------------------------------------------------------
 # MySQL-DWH
-con = get_db_connector('KASHA_DWH')
-cursor = con.cursor()
+my_database = mysql.connector.connect(host=DATABASE_HOST,
+                                      database='KASHA_DWH',
+                                      user=DATABASE_USERNAME,
+                                      password=DATABASE_PASSWORD)
+cursor = my_database.cursor()
 
 SELECT = """SELECT COUNT(order_id)"""
 WHERE = f"""
@@ -46,7 +56,17 @@ cursor.execute(f'{SELECT} FROM KASHA_DWH.woocommerce_orders {WHERE}')
 # ------------------------------------------------------------------------------
 # Woocommerce
 url = f'https://www.kasha.{country_code}/'
-api_connection = connect_to_WC(url, woo_key, woo_secret)
+consumer_key = WC_RW_CONSUMER_KEY
+consumer_secret = WC_RW_CONSUMER_SECRET
+
+api_connection = API(
+    url=url,
+    consumer_key=consumer_key,
+    consumer_secret=consumer_secret,
+    wp_api=True,
+    version="wc/v3",
+    timeout=100,
+    query_string_auth=True)
 
 request = api_connection.get('orders', params={'before': end_date,
                                                'after': start_date,
@@ -60,9 +80,15 @@ if DWH_number_of_orders != WC_number_of_orders:
     send_order_number_email = True
 
 # ------------------------------------------------------------------------------
-# Snd email
+# Set up email
+port = 465  # For SSL
+smtp_server = "smtp.gmail.com"
+receiver_email = RECEIVER_EMAIL
+sender_email = SENDER_EMAIL
+password = EMAIL_PASSWORD
+
 message = f"""\
-Subject: Data monitor #04 ALERT! - Order number discrepancy
+Subject: Data monitor ALERT! - Order number discrepancy
 
 The number of orders between Woocommerce {country} and the Data Warehouse for {day} does not match.
 Woocommerce reports {WC_number_of_orders} orders, and
@@ -71,4 +97,7 @@ DWH reports {DWH_number_of_orders} orders.
 
 # Send email
 if send_order_number_email:
-    send_email(message)
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL(smtp_server, port, context=context) as server:
+        server.login(sender_email, password)
+        server.sendmail(sender_email, receiver_email, message)
