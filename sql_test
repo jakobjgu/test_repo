@@ -1,0 +1,5 @@
+SELECT COUNT(DISTINCT(customer_id))
+FROM KASHA_DWH.dwh_new_repeat_customer
+WHERE LEFT(case_date,7) = '2021-05'
+AND order_country = 'rwanda'
+;
